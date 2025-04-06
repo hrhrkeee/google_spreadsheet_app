@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:csv/csv.dart';
+import 'package:flutter/foundation.dart'; // kIsWeb を使うため
 
 void main() {
   runApp(MyApp());
@@ -76,6 +77,28 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
     return match != null ? match.group(1) : null;
   }
 
+  /// シートIDからシート名を取得（HTML の <title> タグを利用）
+  Future<String> getSheetName(String sheetId) async {
+    String url = "https://docs.google.com/spreadsheets/d/$sheetId";
+    // Web 環境では CORS 対策としてプロキシを経由する
+    if (kIsWeb) {
+      url = "https://thingproxy.freeboard.io/fetch/$url";
+    }
+
+    final response = await http.get(Uri.parse(url));
+    if (response.statusCode == 200) {
+      final regex = RegExp(r'<title>(.*?)</title>', caseSensitive: false);
+      final match = regex.firstMatch(response.body);
+      if (match != null) {
+        String title = match.group(1) ?? '';
+        print("取得したタイトル: $title");
+        // 「 - Google Sheets」を除去して整形
+        return title.replaceAll(" - Google Sheets", "").trim();
+      }
+    }
+    return "シート名不明";
+  }
+
   /// 取得ボタンが押されたときの処理
   Future<void> _fetchSpreadsheet() async {
     setState(() {
@@ -104,7 +127,7 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
       return;
     }
 
-    // 最初のシート（gid=0）をCSV形式で取得するURLを生成
+    // CSV取得用 URL を生成
     final csvUrl =
         "https://docs.google.com/spreadsheets/d/$sheetId/export?format=csv&gid=0";
 
@@ -118,16 +141,9 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
         return;
       }
 
-      // シート名の取得（レスポンスヘッダ content-disposition から）
-      String sheetName = "不明なシート名";
-      final disposition = response.headers['content-disposition'];
-      if (disposition != null) {
-        final regExp = RegExp(r'filename="(.+?)"');
-        final match = regExp.firstMatch(disposition);
-        if (match != null) {
-          sheetName = match.group(1)!.replaceAll('.csv', '');
-        }
-      }
+      // シート名は getSheetName() を利用して取得
+      // String sheetName = "test";
+      String sheetName = await getSheetName(sheetId);
 
       // UTF-8でレスポンスのバイトデータをデコード
       final csvContent = utf8.decode(response.bodyBytes);
@@ -248,9 +264,7 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
                 return ListTile(
                   title: Text(historyItem.sheetName),
                   subtitle: Text(
-                    "取得日: ${historyItem.retrievalDate.toLocal()}"
-                        .split('.')
-                        .first,
+                    "取得日: ${historyItem.retrievalDate.toLocal().toString().split('.').first}",
                   ),
                   onTap: () {
                     Navigator.push(
@@ -317,11 +331,8 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
 }
 
 /// 単語カード画面（フラッシュカード形式で表示）
-///
 /// ・画面上部にカードの外側として「シャッフル」「最初から」ボタンを配置
-/// ・画面下部（bottomNavigationBar）にナビゲーションボタン群（戻る、めくる、次へ）を、
-///   幅比率 2.5:5:2.5（flex 5:10:5）と隙間付きで配置、
-///   戻る、次へボタンは正方形になり、適切な配色を設定。
+/// ・画面下部にナビゲーションボタン群（戻る、めくる、次へ）を幅比率 2.5:5:2.5 で配置
 class FlashcardPage extends StatefulWidget {
   final List<VocabularyItem> vocabularyItems;
 
@@ -347,7 +358,7 @@ class _FlashcardPageState extends State<FlashcardPage> {
     if (_currentIndex < widget.vocabularyItems.length - 1) {
       setState(() {
         _currentIndex++;
-        _isFront = true; // 遷移時は常に表面を表示
+        _isFront = true;
       });
     }
   }
@@ -357,7 +368,7 @@ class _FlashcardPageState extends State<FlashcardPage> {
     if (_currentIndex > 0) {
       setState(() {
         _currentIndex--;
-        _isFront = true; // 遷移時は常に表面を表示
+        _isFront = true;
       });
     }
   }
@@ -400,7 +411,7 @@ class _FlashcardPageState extends State<FlashcardPage> {
         padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
-            // 画面上部にカードの外側として「シャッフル」「最初から」ボタンを配置
+            // 上部の「シャッフル」「最初から」ボタン
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
@@ -410,7 +421,7 @@ class _FlashcardPageState extends State<FlashcardPage> {
               ],
             ),
             SizedBox(height: 16),
-            // カード部分（中央に表示、ICカード風の横長比率）
+            // カード部分（ICカード風の横長比率）
             Expanded(
               child: Center(
                 child: Card(
@@ -419,7 +430,7 @@ class _FlashcardPageState extends State<FlashcardPage> {
                     aspectRatio: 1.6,
                     child: Stack(
                       children: [
-                        // カード左上にカテゴリーを小さく表示
+                        // 左上：カテゴリー表示
                         Positioned(
                           top: 8,
                           left: 8,
@@ -456,7 +467,7 @@ class _FlashcardPageState extends State<FlashcardPage> {
                                     ],
                                   ),
                         ),
-                        // 右上：色フラグインジケーター（緑、黄、赤）
+                        // 右上：色フラグインジケーター
                         Positioned(
                           top: 8,
                           right: 8,
@@ -483,13 +494,11 @@ class _FlashcardPageState extends State<FlashcardPage> {
           ],
         ),
       ),
-      // 画面下部にナビゲーションボタン（戻る、めくる、次へ）を配置
+      // 下部ナビゲーションボタン
       bottomNavigationBar: LayoutBuilder(
         builder: (context, constraints) {
           double totalWidth = constraints.maxWidth;
-          // 隙間 2 個分（8 * 2）を引いた有効幅
           double effectiveWidth = totalWidth - 16;
-          // flex の合計は 20。sideButtonWidth = effectiveWidth * 5/20
           double sideButtonWidth = effectiveWidth * 5 / 20;
           double rowHeight = sideButtonWidth; // 戻る、次へは正方形
 
@@ -499,7 +508,6 @@ class _FlashcardPageState extends State<FlashcardPage> {
               height: rowHeight,
               child: Row(
                 children: [
-                  // 戻るボタン（flex比 5）
                   Expanded(
                     flex: 5,
                     child: SizedBox(
@@ -523,7 +531,6 @@ class _FlashcardPageState extends State<FlashcardPage> {
                     ),
                   ),
                   SizedBox(width: 8),
-                  // めくるボタン（flex比 10）
                   Expanded(
                     flex: 10,
                     child: SizedBox(
@@ -547,7 +554,6 @@ class _FlashcardPageState extends State<FlashcardPage> {
                     ),
                   ),
                   SizedBox(width: 8),
-                  // 次へボタン（flex比 5）
                   Expanded(
                     flex: 5,
                     child: SizedBox(
