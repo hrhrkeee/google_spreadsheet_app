@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:html' as html; // localStorage 利用のため
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:csv/csv.dart';
@@ -38,6 +39,30 @@ class VocabularyItem {
     required this.yellow,
     required this.red,
   });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'word': word,
+      'meaning': meaning,
+      'notes': notes,
+      'category': category,
+      'green': green,
+      'yellow': yellow,
+      'red': red,
+    };
+  }
+
+  factory VocabularyItem.fromMap(Map<String, dynamic> map) {
+    return VocabularyItem(
+      word: map['word'],
+      meaning: map['meaning'],
+      notes: map['notes'],
+      category: map['category'],
+      green: map['green'],
+      yellow: map['yellow'],
+      red: map['red'],
+    );
+  }
 }
 
 /// シートの履歴を保持するクラス
@@ -51,6 +76,26 @@ class SheetHistory {
     required this.retrievalDate,
     required this.vocabularyItems,
   });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'sheetName': sheetName,
+      'retrievalDate': retrievalDate.toIso8601String(),
+      'vocabularyItems': vocabularyItems.map((item) => item.toMap()).toList(),
+    };
+  }
+
+  factory SheetHistory.fromMap(Map<String, dynamic> map) {
+    return SheetHistory(
+      sheetName: map['sheetName'],
+      retrievalDate: DateTime.parse(map['retrievalDate']),
+      vocabularyItems: List<VocabularyItem>.from(
+        (map['vocabularyItems'] as List).map(
+          (item) => VocabularyItem.fromMap(item),
+        ),
+      ),
+    );
+  }
 }
 
 /// Googleスプレッドシートの共有リンクからCSVデータを取得する画面
@@ -66,8 +111,44 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
   List<List<dynamic>>? _csvData;
   List<VocabularyItem>? _vocabularyItems;
 
-  // 履歴リスト（この例ではセッション中のみ保持）
+  // 履歴リスト（localStorage を利用して永続化）
   final List<SheetHistory> _history = [];
+  final String _storageKey = "sheet_history";
+
+  @override
+  void initState() {
+    super.initState();
+    _loadHistory();
+  }
+
+  /// localStorage に履歴を保存する関数
+  void _saveHistory() {
+    List<Map<String, dynamic>> historyMapList =
+        _history.map((h) => h.toMap()).toList();
+    String jsonStr = jsonEncode(historyMapList);
+    html.window.localStorage[_storageKey] = jsonStr;
+  }
+
+  /// localStorage から履歴を読み込む関数
+  void _loadHistory() {
+    String? jsonStr = html.window.localStorage[_storageKey];
+    if (jsonStr != null) {
+      try {
+        List<dynamic> list = jsonDecode(jsonStr);
+        List<SheetHistory> loadedHistory =
+            list.map((item) => SheetHistory.fromMap(item)).toList();
+        setState(() {
+          _history.clear();
+          _history.addAll(loadedHistory);
+        });
+      } catch (e) {
+        // 読み込みに失敗した場合は履歴を初期化
+        setState(() {
+          _history.clear();
+        });
+      }
+    }
+  }
 
   /// スプレッドシートの共有リンクからシートIDを抽出する関数
   String? _extractSheetId(String url) {
@@ -118,8 +199,7 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
         return;
       }
 
-      // シート名は getSheetName() を利用して取得
-      // String sheetName = "test";
+      // シート名はシートIDを利用（必要に応じて変更可能）
       String sheetName = sheetId;
 
       // UTF-8でレスポンスのバイトデータをデコード
@@ -184,13 +264,13 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
         setState(() {
           _vocabularyItems = items;
           // 履歴へ追加（取得時刻は現在日時）
-          _history.add(
-            SheetHistory(
-              sheetName: sheetName,
-              retrievalDate: DateTime.now(),
-              vocabularyItems: items,
-            ),
+          SheetHistory newHistory = SheetHistory(
+            sheetName: sheetName,
+            retrievalDate: DateTime.now(),
+            vocabularyItems: items,
           );
+          _history.add(newHistory);
+          _saveHistory();
         });
       }
     } catch (e) {
@@ -308,8 +388,6 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
 }
 
 /// 単語カード画面（フラッシュカード形式で表示）
-/// ・画面上部にカードの外側として「シャッフル」「最初から」ボタンを配置
-/// ・画面下部にナビゲーションボタン群（戻る、めくる、次へ）を幅比率 2.5:5:2.5 で配置
 class FlashcardPage extends StatefulWidget {
   final List<VocabularyItem> vocabularyItems;
 
@@ -398,7 +476,7 @@ class _FlashcardPageState extends State<FlashcardPage> {
               ],
             ),
             SizedBox(height: 16),
-            // カード部分（ICカード風の横長比率）
+            // カード部分
             Expanded(
               child: Center(
                 child: Card(
