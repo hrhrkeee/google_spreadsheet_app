@@ -2,6 +2,8 @@
 
 Googleスプレッドシートの共有リンクを使った単語帳アプリ
 
+リンク：https://hrhrkeee.github.io/google_spreadsheet_app/
+
 
 ### 使い方
 
