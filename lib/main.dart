@@ -19,11 +19,12 @@ class MyApp extends StatelessWidget {
   }
 }
 
-/// 単語データを保持するモデルクラス（色フラグ付き）
+/// 単語データを保持するモデルクラス（カテゴリーと色フラグ付き）
 class VocabularyItem {
   final String word; // 単語
   final String meaning; // 意味
   final String notes; // 備考
+  final String category; // カテゴリー
   final bool green; // 緑フラグ
   final bool yellow; // 黄フラグ
   final bool red; // 赤フラグ
@@ -32,9 +33,23 @@ class VocabularyItem {
     required this.word,
     required this.meaning,
     required this.notes,
+    required this.category,
     required this.green,
     required this.yellow,
     required this.red,
+  });
+}
+
+/// シートの履歴を保持するクラス
+class SheetHistory {
+  final String sheetName;
+  final DateTime retrievalDate;
+  final List<VocabularyItem> vocabularyItems;
+
+  SheetHistory({
+    required this.sheetName,
+    required this.retrievalDate,
+    required this.vocabularyItems,
   });
 }
 
@@ -50,6 +65,9 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
   String? _errorMessage;
   List<List<dynamic>>? _csvData;
   List<VocabularyItem>? _vocabularyItems;
+
+  // 履歴リスト（この例ではセッション中のみ保持）
+  final List<SheetHistory> _history = [];
 
   /// スプレッドシートの共有リンクからシートIDを抽出する関数
   String? _extractSheetId(String url) {
@@ -100,6 +118,17 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
         return;
       }
 
+      // シート名の取得（レスポンスヘッダ content-disposition から）
+      String sheetName = "不明なシート名";
+      final disposition = response.headers['content-disposition'];
+      if (disposition != null) {
+        final regExp = RegExp(r'filename="(.+?)"');
+        final match = regExp.firstMatch(disposition);
+        if (match != null) {
+          sheetName = match.group(1)!.replaceAll('.csv', '');
+        }
+      }
+
       // UTF-8でレスポンスのバイトデータをデコード
       final csvContent = utf8.decode(response.bodyBytes);
 
@@ -117,6 +146,7 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
         final int wordIndex = header.indexOf("単語");
         final int meaningIndex = header.indexOf("意味");
         final int notesIndex = header.indexOf("備考");
+        final int categoryIndex = header.indexOf("カテゴリー");
         final int greenIndex = header.indexOf("緑");
         final int yellowIndex = header.indexOf("黄");
         final int redIndex = header.indexOf("赤");
@@ -124,16 +154,17 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
         if (wordIndex == -1 ||
             meaningIndex == -1 ||
             notesIndex == -1 ||
+            categoryIndex == -1 ||
             greenIndex == -1 ||
             yellowIndex == -1 ||
             redIndex == -1) {
           setState(() {
-            _errorMessage = "CSVに必要なカラム（単語、意味、備考、緑、黄、赤）が見つかりません。";
+            _errorMessage = "CSVに必要なカラム（単語、意味、備考、カテゴリー、緑、黄、赤）が見つかりません。";
           });
           return;
         }
 
-        // ヘッダー以降の各行からVocabularyItemを生成
+        // ヘッダー以降の各行から VocabularyItem を生成
         List<VocabularyItem> items = [];
         for (var i = 1; i < _csvData!.length; i++) {
           var row = _csvData![i];
@@ -143,6 +174,7 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
                 word: row[wordIndex].toString(),
                 meaning: row[meaningIndex].toString(),
                 notes: row[notesIndex].toString(),
+                category: row[categoryIndex].toString(),
                 green: row[greenIndex].toString().toLowerCase() == 'true',
                 yellow: row[yellowIndex].toString().toLowerCase() == 'true',
                 red: row[redIndex].toString().toLowerCase() == 'true',
@@ -158,6 +190,14 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
         }
         setState(() {
           _vocabularyItems = items;
+          // 履歴へ追加（取得時刻は現在日時）
+          _history.add(
+            SheetHistory(
+              sheetName: sheetName,
+              retrievalDate: DateTime.now(),
+              vocabularyItems: items,
+            ),
+          );
         });
       }
     } catch (e) {
@@ -187,41 +227,89 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
     );
   }
 
+  /// 履歴リストの表示ウィジェット
+  Widget _buildHistoryList() {
+    return _history.isEmpty
+        ? SizedBox.shrink()
+        : Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              "履歴",
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            ListView.separated(
+              shrinkWrap: true,
+              physics: NeverScrollableScrollPhysics(),
+              itemCount: _history.length,
+              separatorBuilder: (context, index) => Divider(),
+              itemBuilder: (context, index) {
+                final historyItem = _history[index];
+                return ListTile(
+                  title: Text(historyItem.sheetName),
+                  subtitle: Text(
+                    "取得日: ${historyItem.retrievalDate.toLocal()}"
+                        .split('.')
+                        .first,
+                  ),
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder:
+                            (context) => FlashcardPage(
+                              vocabularyItems: historyItem.vocabularyItems,
+                            ),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ],
+        );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: Text("スプレッドシート読み込み")),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          children: [
-            // スプレッドシートの共有リンク入力フィールド
-            TextField(
-              controller: _linkController,
-              decoration: InputDecoration(
-                labelText: "スプレッドシートの共有リンク",
-                border: OutlineInputBorder(),
+      body: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            children: [
+              // スプレッドシートの共有リンク入力フィールド
+              TextField(
+                controller: _linkController,
+                decoration: InputDecoration(
+                  labelText: "スプレッドシートの共有リンク",
+                  border: OutlineInputBorder(),
+                ),
               ),
-            ),
-            SizedBox(height: 10),
-            // 取得ボタン
-            ElevatedButton(
-              onPressed: _loading ? null : _fetchSpreadsheet,
-              child:
-                  _loading
-                      ? SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                      : Text("取得"),
-            ),
-            SizedBox(height: 20),
-            if (_errorMessage != null)
-              Text(_errorMessage!, style: TextStyle(color: Colors.red)),
-            // CSV取得後、単語帳開始ボタンを表示（必要なカラムが存在する場合）
-            if (_vocabularyItems != null) _buildStartButton(),
-          ],
+              SizedBox(height: 10),
+              // 取得ボタン
+              ElevatedButton(
+                onPressed: _loading ? null : _fetchSpreadsheet,
+                child:
+                    _loading
+                        ? SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                        : Text("取得"),
+              ),
+              SizedBox(height: 20),
+              if (_errorMessage != null)
+                Text(_errorMessage!, style: TextStyle(color: Colors.red)),
+              // CSV取得後、単語帳開始ボタンを表示（必要なカラムが存在する場合）
+              if (_vocabularyItems != null) _buildStartButton(),
+              SizedBox(height: 20),
+              // 履歴リストの表示
+              _buildHistoryList(),
+            ],
+          ),
         ),
       ),
     );
@@ -233,7 +321,7 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
 /// ・画面上部にカードの外側として「シャッフル」「最初から」ボタンを配置
 /// ・画面下部（bottomNavigationBar）にナビゲーションボタン群（戻る、めくる、次へ）を、
 ///   幅比率 2.5:5:2.5（flex 5:10:5）と隙間付きで配置、
-///   戻る、次へボタンは正方形になり、適切な配色（戻る：赤系、めくる：青系、次へ：緑系）を設定。
+///   戻る、次へボタンは正方形になり、適切な配色を設定。
 class FlashcardPage extends StatefulWidget {
   final List<VocabularyItem> vocabularyItems;
 
@@ -331,6 +419,18 @@ class _FlashcardPageState extends State<FlashcardPage> {
                     aspectRatio: 1.6,
                     child: Stack(
                       children: [
+                        // カード左上にカテゴリーを小さく表示
+                        Positioned(
+                          top: 8,
+                          left: 8,
+                          child: Text(
+                            currentItem.category,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.black54,
+                            ),
+                          ),
+                        ),
                         Center(
                           child:
                               _isFront
@@ -415,6 +515,7 @@ class _FlashcardPageState extends State<FlashcardPage> {
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(8.0),
                           ),
+                          textStyle: TextStyle(fontSize: 20),
                         ),
                         onPressed: _currentIndex == 0 ? null : _previousCard,
                         child: Text("戻る"),
@@ -438,6 +539,7 @@ class _FlashcardPageState extends State<FlashcardPage> {
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(8.0),
                           ),
+                          textStyle: TextStyle(fontSize: 20),
                         ),
                         onPressed: _flipCard,
                         child: Text("めくる"),
@@ -461,6 +563,7 @@ class _FlashcardPageState extends State<FlashcardPage> {
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(8.0),
                           ),
+                          textStyle: TextStyle(fontSize: 20),
                         ),
                         onPressed:
                             _currentIndex == widget.vocabularyItems.length - 1
