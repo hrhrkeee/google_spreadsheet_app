@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:csv/csv.dart';
-import 'package:flutter/foundation.dart';
 
 void main() {
   runApp(MyApp());
@@ -66,7 +65,6 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
   String? _errorMessage;
   List<List<dynamic>>? _csvData;
   List<VocabularyItem>? _vocabularyItems;
-  String? _sheetName; // 取得したシート名を保持する変数
 
   // 履歴リスト（この例ではセッション中のみ保持）
   final List<SheetHistory> _history = [];
@@ -78,28 +76,6 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
     return match != null ? match.group(1) : null;
   }
 
-  /// シートIDからシート名を取得（HTML の <title> タグを利用）
-  Future<String> getSheetName(String sheetId) async {
-    String url = "https://docs.google.com/spreadsheets/d/$sheetId";
-    // Web 環境では CORS 対策としてプロキシを経由する
-    if (kIsWeb) {
-      url = "https://thingproxy.freeboard.io/fetch/$url";
-    }
-
-    final response = await http.get(Uri.parse(url));
-    if (response.statusCode == 200) {
-      final regex = RegExp(r'<title>(.*?)</title>', caseSensitive: false);
-      final match = regex.firstMatch(response.body);
-      if (match != null) {
-        String title = match.group(1) ?? '';
-        print("取得したタイトル: $title");
-        // 「 - Google Sheets」を除去して整形
-        return title.replaceAll(" - Google Sheets", "").trim();
-      }
-    }
-    return "シート名不明";
-  }
-
   /// 取得ボタンが押されたときの処理
   Future<void> _fetchSpreadsheet() async {
     setState(() {
@@ -107,7 +83,6 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
       _errorMessage = null;
       _csvData = null;
       _vocabularyItems = null;
-      _sheetName = null;
     });
 
     String link = _linkController.text.trim();
@@ -143,11 +118,9 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
         return;
       }
 
-      // 取得したシート名を getSheetName() で取得し状態に保存
-      String sheetName = await getSheetName(sheetId);
-      setState(() {
-        _sheetName = sheetName;
-      });
+      // シート名は getSheetName() を利用して取得
+      // String sheetName = "test";
+      String sheetName = sheetId;
 
       // UTF-8でレスポンスのバイトデータをデコード
       final csvContent = utf8.decode(response.bodyBytes);
@@ -297,7 +270,7 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
           padding: const EdgeInsets.all(16.0),
           child: Column(
             children: [
-              // 共有リンク入力フィールド
+              // スプレッドシートの共有リンク入力フィールド
               TextField(
                 controller: _linkController,
                 decoration: InputDecoration(
@@ -321,13 +294,7 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
               SizedBox(height: 20),
               if (_errorMessage != null)
                 Text(_errorMessage!, style: TextStyle(color: Colors.red)),
-              // 取得したシート名の表示（_sheetName が設定されている場合）
-              if (_sheetName != null)
-                Text(
-                  "シート名: $_sheetName",
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                ),
-              // CSV取得後、単語帳開始ボタン
+              // CSV取得後、単語帳開始ボタンを表示（必要なカラムが存在する場合）
               if (_vocabularyItems != null) _buildStartButton(),
               SizedBox(height: 20),
               // 履歴リストの表示
@@ -341,7 +308,7 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
 }
 
 /// 単語カード画面（フラッシュカード形式で表示）
-/// ・画面上部に「シャッフル」「最初から」ボタンを配置
+/// ・画面上部にカードの外側として「シャッフル」「最初から」ボタンを配置
 /// ・画面下部にナビゲーションボタン群（戻る、めくる、次へ）を幅比率 2.5:5:2.5 で配置
 class FlashcardPage extends StatefulWidget {
   final List<VocabularyItem> vocabularyItems;
