@@ -67,33 +67,29 @@ class VocabularyItem {
 
 /// シートの履歴を保持するクラス
 class SheetHistory {
-  final String sheetName;
+  final String sheetId; // シートID
+  String displayName; // 表示名（編集可能）
   final DateTime retrievalDate;
-  final List<VocabularyItem> vocabularyItems;
 
   SheetHistory({
-    required this.sheetName,
+    required this.sheetId,
+    String? displayName, // オプショナルに
     required this.retrievalDate,
-    required this.vocabularyItems,
-  });
+  }) : displayName = displayName ?? sheetId; // デフォルトはsheetId
 
   Map<String, dynamic> toMap() {
     return {
-      'sheetName': sheetName,
+      'sheetId': sheetId,
+      'displayName': displayName,
       'retrievalDate': retrievalDate.toIso8601String(),
-      'vocabularyItems': vocabularyItems.map((item) => item.toMap()).toList(),
     };
   }
 
   factory SheetHistory.fromMap(Map<String, dynamic> map) {
     return SheetHistory(
-      sheetName: map['sheetName'],
+      sheetId: map['sheetId'],
+      displayName: map['displayName'] ?? map['sheetId'], // 後方互換性のため
       retrievalDate: DateTime.parse(map['retrievalDate']),
-      vocabularyItems: List<VocabularyItem>.from(
-        (map['vocabularyItems'] as List).map(
-          (item) => VocabularyItem.fromMap(item),
-        ),
-      ),
     );
   }
 }
@@ -332,9 +328,9 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
             _vocabularyItems = filteredItems;
             // 履歴へ追加（取得時刻は現在日時）
             SheetHistory newHistory = SheetHistory(
-              sheetName: sheetName,
+              sheetId: sheetId, 
+              displayName: sheetName, // 初期表示名はシートIDと同じ
               retrievalDate: DateTime.now(),
-              vocabularyItems: filteredItems,
             );
             _history.add(newHistory);
             _saveHistory();
@@ -344,9 +340,9 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
             _vocabularyItems = allItems;
             // 履歴へ追加（取得時刻は現在日時）
             SheetHistory newHistory = SheetHistory(
-              sheetName: sheetName,
+              sheetId: sheetId,
+              displayName: sheetName, // 初期表示名はシートIDと同じ
               retrievalDate: DateTime.now(),
-              vocabularyItems: allItems,
             );
             _history.add(newHistory);
             _saveHistory();
@@ -399,69 +395,147 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
               itemBuilder: (context, index) {
                 final historyItem = _history[index];
                 return ListTile(
-                  title: Text(historyItem.sheetName),
+                  title: Text(historyItem.displayName),
                   subtitle: Text(
                     "取得日: ${historyItem.retrievalDate.toLocal().toString().split('.').first}",
                   ),
-                  onTap: () {
-                    // 履歴アイテムの全単語を全単語リストにセット
-                    _allVocabularyItems = historyItem.vocabularyItems;
-
-                    // 現在のフィルター状態を適用
-                    bool anyFilterActive =
-                        _filterGreen || _filterYellow || _filterRed;
-
-                    if (anyFilterActive) {
-                      // フィルターが選択されている場合は、それを適用
-                      List<VocabularyItem> filteredItems =
-                          historyItem.vocabularyItems.where((item) {
+                  trailing: IconButton(
+                    icon: Icon(Icons.edit, color: Colors.blue),
+                    onPressed: () {
+                      // 表示名編集ダイアログを表示
+                      _showEditNameDialog(historyItem);
+                    },
+                  ),
+                  onTap: () async {
+                    // 既存のコード（変更なし）
+                    // 選択されたシートIDでローディング表示を開始
+                    setState(() {
+                      _loading = true;
+                      _errorMessage = null;
+                    });
+                    
+                    try {
+                      // 保存されたシートIDからCSV取得用URLを生成
+                      final csvUrl = "https://docs.google.com/spreadsheets/d/${historyItem.sheetId}/export?format=csv&gid=0";
+                      
+                      // 以下は_fetchSpreadsheetと同様の処理でデータを取得
+                      final response = await http.get(Uri.parse(csvUrl));
+                      if (response.statusCode != 200) {
+                        setState(() {
+                          _errorMessage = "データの取得に失敗しました。HTTPステータスコード: ${response.statusCode}";
+                          _loading = false;
+                        });
+                        return;
+                      }
+                      
+                      // UTF-8でレスポンスのバイトデータをデコード
+                      final csvContent = utf8.decode(response.bodyBytes);
+                      
+                      // CSVパース
+                      final csvTable = const CsvToListConverter().convert(csvContent);
+                      
+                      // ヘッダー処理とデータの変換（_fetchSpreadsheetと同様）
+                      if (csvTable.isNotEmpty) {
+                        final header = csvTable[0];
+                        final int wordIndex = header.indexOf("単語");
+                        final int meaningIndex = header.indexOf("意味");
+                        final int notesIndex = header.indexOf("備考");
+                        final int categoryIndex = header.indexOf("カテゴリー");
+                        final int greenIndex = header.indexOf("緑");
+                        final int yellowIndex = header.indexOf("黄");
+                        final int redIndex = header.indexOf("赤");
+                        
+                        if (wordIndex == -1 || meaningIndex == -1 || notesIndex == -1 ||
+                            categoryIndex == -1 || greenIndex == -1 || yellowIndex == -1 || redIndex == -1) {
+                          setState(() {
+                            _errorMessage = "CSVに必要なカラムが見つかりません。";
+                            _loading = false;
+                          });
+                          return;
+                        }
+                        
+                        // VocabularyItemリストを生成
+                        List<VocabularyItem> items = [];
+                        for (var i = 1; i < csvTable.length; i++) {
+                          var row = csvTable[i];
+                          if (row.length > redIndex) {
+                            items.add(
+                              VocabularyItem(
+                                word: row[wordIndex].toString(),
+                                meaning: row[meaningIndex].toString(),
+                                notes: row[notesIndex].toString(),
+                                category: row[categoryIndex].toString(),
+                                green: row[greenIndex].toString().toLowerCase() == 'true',
+                                yellow: row[yellowIndex].toString().toLowerCase() == 'true',
+                                red: row[redIndex].toString().toLowerCase() == 'true',
+                              ),
+                            );
+                          }
+                        }
+                        
+                        if (items.isEmpty) {
+                          setState(() {
+                            _errorMessage = "単語データが存在しません。";
+                            _loading = false;
+                          });
+                          return;
+                        }
+                        
+                        // 全データを保存
+                        setState(() {
+                          _allVocabularyItems = items;
+                          _loading = false;
+                        });
+                        
+                        // フィルター処理
+                        bool anyFilterActive = _filterGreen || _filterYellow || _filterRed;
+                        
+                        if (anyFilterActive) {
+                          List<VocabularyItem> filteredItems = items.where((item) {
                             return (_filterGreen && item.green) ||
                                 (_filterYellow && item.yellow) ||
                                 (_filterRed && item.red);
                           }).toList();
-
-                      // フィルターの結果が空の場合はアラートを表示
-                      if (filteredItems.isEmpty) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text("選択した条件に一致する単語がありません。すべての単語を表示します。"),
-                            duration: Duration(seconds: 3),
-                          ),
-                        );
-
-                        // フィルター結果が空の場合は全単語を使用
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder:
-                                (context) => FlashcardPage(
-                                  vocabularyItems: historyItem.vocabularyItems,
-                                ),
-                          ),
-                        );
-                      } else {
-                        // フィルター結果があれば、それを使用
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder:
-                                (context) => FlashcardPage(
-                                  vocabularyItems: filteredItems,
-                                ),
-                          ),
-                        );
-                      }
-                    } else {
-                      // フィルターが選択されていない場合は全単語を使用
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder:
-                              (context) => FlashcardPage(
-                                vocabularyItems: historyItem.vocabularyItems,
+                          
+                          if (filteredItems.isEmpty) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text("選択した条件に一致する単語がありません。すべての単語を表示します。"),
+                                duration: Duration(seconds: 3),
                               ),
-                        ),
-                      );
+                            );
+                            
+                            // フィルター結果が空の場合は全単語を使用
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => FlashcardPage(vocabularyItems: items),
+                              ),
+                            );
+                          } else {
+                            // フィルター結果があれば、それを使用
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => FlashcardPage(vocabularyItems: filteredItems),
+                              ),
+                            );
+                          }
+                        } else {
+                          // フィルターが選択されていない場合は全単語を使用
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => FlashcardPage(vocabularyItems: items),
+                            ),
+                          );
+                        }
+                      }
+                    } catch (e) {
+                      setState(() {
+                        _errorMessage = "エラーが発生しました: $e";
+                        _loading = false;
+                      });
                     }
                   },
                 );
@@ -592,6 +666,60 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  /// 履歴アイテムの表示名を編集するダイアログ
+  void _showEditNameDialog(SheetHistory historyItem) {
+    final TextEditingController _nameController = TextEditingController();
+    _nameController.text = historyItem.displayName;
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text("表示名の編集"),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text("シートID: ${historyItem.sheetId}", style: TextStyle(fontSize: 12, color: Colors.grey)),
+            SizedBox(height: 8),
+            TextField(
+              controller: _nameController,
+              decoration: InputDecoration(
+                labelText: "表示名",
+                border: OutlineInputBorder(),
+                hintText: "最大100文字まで",
+              ),
+              maxLength: 100, // 100文字制限
+              autofocus: true,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text("キャンセル"),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              // 入力された表示名を設定（空の場合はシートIDを使用）
+              String newDisplayName = _nameController.text.trim();
+              if (newDisplayName.isEmpty) {
+                newDisplayName = historyItem.sheetId;
+              }
+              
+              setState(() {
+                historyItem.displayName = newDisplayName;
+                _saveHistory(); // 変更を保存
+              });
+              
+              Navigator.pop(context);
+            },
+            child: Text("保存"),
+          ),
+        ],
       ),
     );
   }
