@@ -110,10 +110,51 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
   String? _errorMessage;
   List<List<dynamic>>? _csvData;
   List<VocabularyItem>? _vocabularyItems;
+  List<VocabularyItem>? _allVocabularyItems;
+
+  // 色フィルター用チェックボックス状態
+  bool _filterGreen = false;
+  bool _filterYellow = false;
+  bool _filterRed = false;
 
   // 履歴リスト（localStorage を利用して永続化）
   final List<SheetHistory> _history = [];
   final String _storageKey = "sheet_history";
+
+  // 追加：フィルターを適用する関数
+  void _applyFilters() {
+    if (_allVocabularyItems == null || _allVocabularyItems!.isEmpty) {
+      return; // データがまだ読み込まれていない場合は何もしない
+    }
+
+    setState(() {
+      bool anyFilterActive = _filterGreen || _filterYellow || _filterRed;
+
+      if (!anyFilterActive) {
+        // フィルターが選択されていない場合は全データを表示
+        _vocabularyItems = _allVocabularyItems;
+        _errorMessage = null;
+        return;
+      }
+
+      // フィルターに基づいて単語を絞り込み
+      List<VocabularyItem> filtered =
+          _allVocabularyItems!.where((item) {
+            return (_filterGreen && item.green) ||
+                (_filterYellow && item.yellow) ||
+                (_filterRed && item.red);
+          }).toList();
+
+      if (filtered.isEmpty) {
+        _errorMessage = "選択された条件に一致する単語がありません。";
+        // 空リストの場合でも元データは保持
+        _vocabularyItems = [];
+      } else {
+        _errorMessage = null;
+        _vocabularyItems = filtered;
+      }
+    });
+  }
 
   @override
   void initState() {
@@ -238,11 +279,11 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
         }
 
         // ヘッダー以降の各行から VocabularyItem を生成
-        List<VocabularyItem> items = [];
+        List<VocabularyItem> allItems = [];
         for (var i = 1; i < _csvData!.length; i++) {
           var row = _csvData![i];
           if (row.length > redIndex) {
-            items.add(
+            allItems.add(
               VocabularyItem(
                 word: row[wordIndex].toString(),
                 meaning: row[meaningIndex].toString(),
@@ -255,23 +296,62 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
             );
           }
         }
-        if (items.isEmpty) {
+
+        if (allItems.isEmpty) {
           setState(() {
             _errorMessage = "単語データが存在しません。";
           });
           return;
         }
-        setState(() {
-          _vocabularyItems = items;
-          // 履歴へ追加（取得時刻は現在日時）
-          SheetHistory newHistory = SheetHistory(
-            sheetName: sheetName,
-            retrievalDate: DateTime.now(),
-            vocabularyItems: items,
-          );
-          _history.add(newHistory);
-          _saveHistory();
-        });
+
+        // 全データを保存
+        _allVocabularyItems = allItems;
+
+        // チェックボックスの状態に基づいてフィルタリング
+        bool anyFilterActive = _filterGreen || _filterYellow || _filterRed;
+
+        if (anyFilterActive) {
+          List<VocabularyItem> filteredItems =
+              allItems.where((item) {
+                // いずれかの選択された色フラグがtrueの単語を含める
+                return (_filterGreen && item.green) ||
+                    (_filterYellow && item.yellow) ||
+                    (_filterRed && item.red);
+              }).toList();
+
+          // フィルタリングして0件の場合のエラー処理
+          if (filteredItems.isEmpty) {
+            setState(() {
+              _errorMessage = "選択された条件に一致する単語がありません。";
+              _vocabularyItems = []; // 空のリストを設定
+            });
+            return;
+          }
+
+          setState(() {
+            _vocabularyItems = filteredItems;
+            // 履歴へ追加（取得時刻は現在日時）
+            SheetHistory newHistory = SheetHistory(
+              sheetName: sheetName,
+              retrievalDate: DateTime.now(),
+              vocabularyItems: filteredItems,
+            );
+            _history.add(newHistory);
+            _saveHistory();
+          });
+        } else {
+          setState(() {
+            _vocabularyItems = allItems;
+            // 履歴へ追加（取得時刻は現在日時）
+            SheetHistory newHistory = SheetHistory(
+              sheetName: sheetName,
+              retrievalDate: DateTime.now(),
+              vocabularyItems: allItems,
+            );
+            _history.add(newHistory);
+            _saveHistory();
+          });
+        }
       }
     } catch (e) {
       setState(() {
@@ -324,15 +404,65 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
                     "取得日: ${historyItem.retrievalDate.toLocal().toString().split('.').first}",
                   ),
                   onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder:
-                            (context) => FlashcardPage(
-                              vocabularyItems: historyItem.vocabularyItems,
-                            ),
-                      ),
-                    );
+                    // 履歴アイテムの全単語を全単語リストにセット
+                    _allVocabularyItems = historyItem.vocabularyItems;
+
+                    // 現在のフィルター状態を適用
+                    bool anyFilterActive =
+                        _filterGreen || _filterYellow || _filterRed;
+
+                    if (anyFilterActive) {
+                      // フィルターが選択されている場合は、それを適用
+                      List<VocabularyItem> filteredItems =
+                          historyItem.vocabularyItems.where((item) {
+                            return (_filterGreen && item.green) ||
+                                (_filterYellow && item.yellow) ||
+                                (_filterRed && item.red);
+                          }).toList();
+
+                      // フィルターの結果が空の場合はアラートを表示
+                      if (filteredItems.isEmpty) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text("選択した条件に一致する単語がありません。すべての単語を表示します。"),
+                            duration: Duration(seconds: 3),
+                          ),
+                        );
+
+                        // フィルター結果が空の場合は全単語を使用
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder:
+                                (context) => FlashcardPage(
+                                  vocabularyItems: historyItem.vocabularyItems,
+                                ),
+                          ),
+                        );
+                      } else {
+                        // フィルター結果があれば、それを使用
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder:
+                                (context) => FlashcardPage(
+                                  vocabularyItems: filteredItems,
+                                ),
+                          ),
+                        );
+                      }
+                    } else {
+                      // フィルターが選択されていない場合は全単語を使用
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder:
+                              (context) => FlashcardPage(
+                                vocabularyItems: historyItem.vocabularyItems,
+                              ),
+                        ),
+                      );
+                    }
                   },
                 );
               },
@@ -372,6 +502,86 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
                         : Text("取得"),
               ),
               SizedBox(height: 20),
+
+              // 追加：色フィルターチェックボックス
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(12.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          // 緑チェックボックス
+                          Row(
+                            children: [
+                              Checkbox(
+                                value: _filterGreen,
+                                onChanged: (value) {
+                                  setState(() {
+                                    _filterGreen = value!;
+                                  });
+                                  _applyFilters(); // フィルター適用
+                                },
+                                activeColor: Colors.green,
+                              ),
+                              Text('緑'),
+                            ],
+                          ),
+                          SizedBox(width: 16),
+                          // 黄色チェックボックス
+                          Row(
+                            children: [
+                              Checkbox(
+                                value: _filterYellow,
+                                onChanged: (value) {
+                                  setState(() {
+                                    _filterYellow = value!;
+                                  });
+                                  _applyFilters(); // フィルター適用
+                                },
+                                fillColor: MaterialStateProperty.resolveWith(
+                                  (states) =>
+                                      states.contains(MaterialState.selected)
+                                          ? Colors.yellow
+                                          : null,
+                                ),
+                              ),
+                              Text('黄色'),
+                            ],
+                          ),
+                          SizedBox(width: 16),
+                          // 赤チェックボックス
+                          Row(
+                            children: [
+                              Checkbox(
+                                value: _filterRed,
+                                onChanged: (value) {
+                                  setState(() {
+                                    _filterRed = value!;
+                                  });
+                                  _applyFilters(); // フィルター適用
+                                },
+                                activeColor: Colors.red,
+                              ),
+                              Text('赤'),
+                            ],
+                          ),
+                        ],
+                      ),
+                      SizedBox(height: 8),
+                      Text(
+                        'チェックボックスにマークがある場合、その単語のみ出題\n（マークがない場合はすべて出題）',
+                        style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              SizedBox(height: 20),
+
               if (_errorMessage != null)
                 Text(_errorMessage!, style: TextStyle(color: Colors.red)),
               // CSV取得後、単語帳開始ボタンを表示（必要なカラムが存在する場合）
@@ -400,6 +610,13 @@ class FlashcardPage extends StatefulWidget {
 class _FlashcardPageState extends State<FlashcardPage> {
   int _currentIndex = 0;
   bool _isFront = true; // 表：true, 裏：false
+
+  @override
+  void initState() {
+    super.initState();
+    // 初期表示時に単語リストをシャッフル
+    widget.vocabularyItems.shuffle();
+  }
 
   /// カードの裏表を反転
   void _flipCard() {
@@ -448,12 +665,17 @@ class _FlashcardPageState extends State<FlashcardPage> {
   /// カード右上に表示する小さな丸インジケーター
   Widget _buildIndicator(bool flag, Color color) {
     return Container(
-      width: 12,
-      height: 12,
+      width: 16,
+      height: 16,
       decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        color: flag ? color : Colors.grey,
+        border: Border.all(color: Colors.grey.shade500, width: 0.5),
+        borderRadius: BorderRadius.circular(2),
+        color: flag ? color : Colors.grey.shade400,
       ),
+      child:
+          flag
+              ? Icon(Icons.check, size: 12, color: Colors.grey.shade100)
+              : Icon(Icons.check, size: 12, color: Colors.black87),
     );
   }
 
@@ -540,6 +762,18 @@ class _FlashcardPageState extends State<FlashcardPage> {
                             ],
                           ),
                         ),
+                        // 追加：右下にカード番号表示
+                        Positioned(
+                          bottom: 8,
+                          right: 8,
+                          child: Text(
+                            "${_currentIndex + 1}/${widget.vocabularyItems.length}",
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.black54,
+                            ),
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -550,6 +784,7 @@ class _FlashcardPageState extends State<FlashcardPage> {
         ),
       ),
       // 下部ナビゲーションボタン
+      // FlashcardPage 内の build メソッドの bottomNavigationBar 部分（修正例）
       bottomNavigationBar: LayoutBuilder(
         builder: (context, constraints) {
           double totalWidth = constraints.maxWidth;
@@ -558,7 +793,7 @@ class _FlashcardPageState extends State<FlashcardPage> {
           double rowHeight = sideButtonWidth; // 戻る、次へは正方形
 
           return Padding(
-            padding: const EdgeInsets.all(8.0),
+            padding: const EdgeInsets.fromLTRB(8.0, 8.0, 8.0, 32.0),
             child: SizedBox(
               height: rowHeight,
               child: Row(
