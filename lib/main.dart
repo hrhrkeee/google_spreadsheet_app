@@ -738,12 +738,31 @@ class FlashcardPage extends StatefulWidget {
 class _FlashcardPageState extends State<FlashcardPage> {
   int _currentIndex = 0;
   bool _isFront = true; // 表：true, 裏：false
+  
+  // 文字サイズの最大値と最小値を定数として定義
+  static const double MAX_WORD_SIZE = 32.0;
+  static const double MIN_WORD_SIZE = 16.0;
+  static const double MAX_MEANING_SIZE = 24.0;
+  static const double MIN_MEANING_SIZE = 14.0;
+  static const double MAX_NOTES_SIZE = 18.0;
+  static const double MIN_NOTES_SIZE = 12.0;
 
   @override
   void initState() {
     super.initState();
     // 初期表示時に単語リストをシャッフル
     widget.vocabularyItems.shuffle();
+  }
+
+  // テキストの長さに基づいて適切なフォントサイズを計算
+  double _calculateFontSize(String text, double maxSize, double minSize, double maxLength) {
+    if (text.isEmpty) return maxSize;
+    
+    // 文字数に応じて線形的にフォントサイズを小さくする
+    double calculatedSize = maxSize - (text.length / maxLength) * (maxSize - minSize);
+    
+    // 最小・最大サイズの範囲内に収める
+    return calculatedSize.clamp(minSize, maxSize);
   }
 
   /// カードの裏表を反転
@@ -810,6 +829,12 @@ class _FlashcardPageState extends State<FlashcardPage> {
   @override
   Widget build(BuildContext context) {
     final currentItem = widget.vocabularyItems[_currentIndex];
+    
+    // 表示する各テキストに対して適切なフォントサイズを計算
+    final wordFontSize = _calculateFontSize(currentItem.word, MAX_WORD_SIZE, MIN_WORD_SIZE, 15);
+    final meaningFontSize = _calculateFontSize(currentItem.meaning, MAX_MEANING_SIZE, MIN_MEANING_SIZE, 30);
+    final notesFontSize = _calculateFontSize(currentItem.notes, MAX_NOTES_SIZE, MIN_NOTES_SIZE, 50);
+
     return Scaffold(
       appBar: AppBar(title: Text("単語帳")),
       body: Padding(
@@ -825,89 +850,106 @@ class _FlashcardPageState extends State<FlashcardPage> {
                 ElevatedButton(onPressed: _restartCards, child: Text("最初から")),
               ],
             ),
-            SizedBox(height: 16),
-            // カード部分
+            SizedBox(height: 12), // 上部との隙間を少し確保
+            // カード部分 - 上下の余白を調整
             Expanded(
-              child: Center(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4.0), // 上下に少しの隙間を確保
                 child: Card(
                   elevation: 4,
-                  child: AspectRatio(
-                    aspectRatio: 1.6,
-                    child: Stack(
-                      children: [
-                        // 左上：カテゴリー表示
-                        Positioned(
-                          top: 8,
-                          left: 8,
-                          child: Text(
-                            currentItem.category,
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: Colors.black54,
-                            ),
-                          ),
-                        ),
-                        Center(
-                          child:
-                              _isFront
-                                  ? Text(
-                                    currentItem.word,
-                                    style: TextStyle(fontSize: 24),
-                                    textAlign: TextAlign.center,
-                                  )
-                                  : Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Text(
-                                        currentItem.meaning,
-                                        style: TextStyle(fontSize: 20),
-                                        textAlign: TextAlign.center,
-                                      ),
-                                      SizedBox(height: 10),
-                                      Text(
-                                        currentItem.notes,
-                                        style: TextStyle(fontSize: 16),
-                                        textAlign: TextAlign.center,
-                                      ),
-                                    ],
-                                  ),
-                        ),
-                        // 右上：色フラグインジケーター
-                        Positioned(
-                          top: 8,
-                          right: 8,
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              _buildIndicator(currentItem.green, Colors.green),
-                              SizedBox(width: 4),
-                              _buildIndicator(
-                                currentItem.yellow,
-                                Colors.yellow,
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      // カードのサイズを画面サイズに合わせて調整
+                      return Stack(
+                        children: [
+                          // 左上：カテゴリー表示
+                          Positioned(
+                            top: 8,
+                            left: 8,
+                            child: Text(
+                              currentItem.category,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.black54,
                               ),
-                              SizedBox(width: 4),
-                              _buildIndicator(currentItem.red, Colors.red),
-                            ],
-                          ),
-                        ),
-                        // 追加：右下にカード番号表示
-                        Positioned(
-                          bottom: 8,
-                          right: 8,
-                          child: Text(
-                            "${_currentIndex + 1}/${widget.vocabularyItems.length}",
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: Colors.black54,
                             ),
                           ),
-                        ),
-                      ],
-                    ),
+                          Padding(
+                            padding: const EdgeInsets.all(24.0),
+                            child: Center(
+                              child: _isFront
+                                  ? Text(
+                                      currentItem.word,
+                                      style: TextStyle(fontSize: wordFontSize),
+                                      textAlign: TextAlign.center,
+                                      overflow: TextOverflow.ellipsis,
+                                      maxLines: 3,
+                                    )
+                                  : Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        Flexible(
+                                          child: Text(
+                                            currentItem.meaning,
+                                            style: TextStyle(fontSize: meaningFontSize),
+                                            textAlign: TextAlign.center,
+                                            overflow: TextOverflow.ellipsis,
+                                            maxLines: 5,
+                                          ),
+                                        ),
+                                        SizedBox(height: 10),
+                                        Flexible(
+                                          child: Text(
+                                            currentItem.notes,
+                                            style: TextStyle(fontSize: notesFontSize),
+                                            textAlign: TextAlign.center,
+                                            overflow: TextOverflow.ellipsis,
+                                            maxLines: 4,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                            ),
+                          ),
+                          // 右上：色フラグインジケーター
+                          Positioned(
+                            top: 8,
+                            right: 8,
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                _buildIndicator(currentItem.green, Colors.green),
+                                SizedBox(width: 4),
+                                _buildIndicator(
+                                  currentItem.yellow,
+                                  Colors.yellow,
+                                ),
+                                SizedBox(width: 4),
+                                _buildIndicator(currentItem.red, Colors.red),
+                              ],
+                            ),
+                          ),
+                          // 右下：カード番号表示
+                          Positioned(
+                            bottom: 8,
+                            right: 8,
+                            child: Text(
+                              "${_currentIndex + 1}/${widget.vocabularyItems.length}",
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.black54,
+                              ),
+                            ),
+                          ),
+                        ],
+                      );
+                    },
                   ),
                 ),
               ),
             ),
+            SizedBox(height: 12), // 下部との隙間を少し確保
           ],
         ),
       ),
