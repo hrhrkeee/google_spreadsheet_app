@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:html' as html; // localStorage 利用のため
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart'; // Clipboardへのアクセスのため追加
 import 'package:http/http.dart' as http;
 import 'package:csv/csv.dart';
 
@@ -70,11 +71,13 @@ class SheetHistory {
   final String sheetId; // シートID
   String displayName; // 表示名（編集可能）
   final DateTime retrievalDate;
+  bool isFavorite; // お気に入りフラグを追加
 
   SheetHistory({
     required this.sheetId,
     String? displayName, // オプショナルに
     required this.retrievalDate,
+    this.isFavorite = false, // デフォルトはfalse
   }) : displayName = displayName ?? sheetId; // デフォルトはsheetId
 
   Map<String, dynamic> toMap() {
@@ -82,6 +85,7 @@ class SheetHistory {
       'sheetId': sheetId,
       'displayName': displayName,
       'retrievalDate': retrievalDate.toIso8601String(),
+      'isFavorite': isFavorite, // お気に入り情報を保存
     };
   }
 
@@ -90,6 +94,7 @@ class SheetHistory {
       sheetId: map['sheetId'],
       displayName: map['displayName'] ?? map['sheetId'], // 後方互換性のため
       retrievalDate: DateTime.parse(map['retrievalDate']),
+      isFavorite: map['isFavorite'] ?? false, // 後方互換性のため
     );
   }
 }
@@ -107,6 +112,7 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
   List<List<dynamic>>? _csvData;
   List<VocabularyItem>? _vocabularyItems;
   List<VocabularyItem>? _allVocabularyItems;
+  bool _linkHasText = false; // テキスト入力の状態を追跡する変数を追加
 
   // 色フィルター用チェックボックス状態
   bool _filterGreen = false;
@@ -116,6 +122,33 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
   // 履歴リスト（localStorage を利用して永続化）
   final List<SheetHistory> _history = [];
   final String _storageKey = "sheet_history";
+
+  @override
+  void initState() {
+    super.initState();
+    _loadHistory();
+    
+    // テキスト入力の変更を検知するリスナーを追加
+    _linkController.addListener(() {
+      final hasText = _linkController.text.isNotEmpty;
+      if (hasText != _linkHasText) {
+        setState(() {
+          _linkHasText = hasText;
+          // 入力が空になった場合はエラーメッセージをクリア
+          if (!hasText) {
+            _errorMessage = null;
+          }
+        });
+      }
+    });
+  }
+  
+  @override
+  void dispose() {
+    // コントローラーを破棄
+    _linkController.dispose();
+    super.dispose();
+  }
 
   // 追加：フィルターを適用する関数
   void _applyFilters() {
@@ -142,9 +175,16 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
           }).toList();
 
       if (filtered.isEmpty) {
-        _errorMessage = "選択された条件に一致する単語がありません。";
-        // 空リストの場合でも元データは保持
-        _vocabularyItems = [];
+        // エラーメッセージを表示せず、代わりにすべての単語を表示
+        _vocabularyItems = _allVocabularyItems;
+        
+        // ユーザーに通知
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("選択した条件に一致する単語がありません。すべての単語を表示します。"),
+            duration: Duration(seconds: 3),
+          ),
+        );
       } else {
         _errorMessage = null;
         _vocabularyItems = filtered;
@@ -152,11 +192,7 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
     });
   }
 
-  @override
-  void initState() {
-    super.initState();
-    _loadHistory();
-  }
+  // 重複するinitStateメソッドを削除しました
 
   /// localStorage に履歴を保存する関数
   void _saveHistory() {
@@ -192,6 +228,186 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
     final RegExp regex = RegExp(r"/d/([a-zA-Z0-9-_]+)");
     final match = regex.firstMatch(url);
     return match != null ? match.group(1) : null;
+  }
+
+  /// クリップボードからリンクを貼り付け
+  Future<void> _pasteFromClipboard() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    if (data != null && data.text != null) {
+      setState(() {
+        _linkController.text = data.text!;
+      });
+    }
+  }
+
+  /// スプレッドシートを取得してフラッシュカードを開始する統合関数
+  Future<void> _fetchAndStartFlashcards() async {
+    setState(() {
+      _loading = true;
+      _errorMessage = null;
+      _csvData = null;
+      _vocabularyItems = null;
+    });
+
+    String link = _linkController.text.trim();
+    if (link.isEmpty) {
+      setState(() {
+        _errorMessage = "リンクが空です。";
+        _loading = false;
+      });
+      return;
+    }
+
+    // シートIDの抽出
+    final sheetId = _extractSheetId(link);
+    if (sheetId == null) {
+      setState(() {
+        _errorMessage = "無効なGoogleスプレッドシートのリンクです。";
+        _loading = false;
+      });
+      return;
+    }
+
+    // CSV取得用 URL を生成
+    final csvUrl =
+        "https://docs.google.com/spreadsheets/d/$sheetId/export?format=csv&gid=0";
+
+    try {
+      final response = await http.get(Uri.parse(csvUrl));
+      if (response.statusCode != 200) {
+        setState(() {
+          _errorMessage = "データの取得に失敗しました。HTTPステータスコード: ${response.statusCode}";
+          _loading = false;
+        });
+        return;
+      }
+
+      // シート名はシートIDを利用（必要に応じて変更可能）
+      String sheetName = sheetId;
+
+      // UTF-8でレスポンスのバイトデータをデコード
+      final csvContent = utf8.decode(response.bodyBytes);
+
+      // CSVパース（csvパッケージを利用）
+      final csvTable = const CsvToListConverter().convert(csvContent);
+
+      setState(() {
+        _csvData = csvTable;
+      });
+
+      // CSVの1行目をヘッダーとして、必要なカラムの存在を確認
+      if (_csvData != null && _csvData!.isNotEmpty) {
+        final header = _csvData![0];
+        final int wordIndex = header.indexOf("単語");
+        final int meaningIndex = header.indexOf("意味");
+        final int notesIndex = header.indexOf("備考");
+        final int categoryIndex = header.indexOf("カテゴリー");
+        final int greenIndex = header.indexOf("緑");
+        final int yellowIndex = header.indexOf("黄");
+        final int redIndex = header.indexOf("赤");
+
+        if (wordIndex == -1 ||
+            meaningIndex == -1 ||
+            notesIndex == -1 ||
+            categoryIndex == -1 ||
+            greenIndex == -1 ||
+            yellowIndex == -1 ||
+            redIndex == -1) {
+          setState(() {
+            _errorMessage = "CSVに必要なカラム（単語、意味、備考、カテゴリー、緑、黄、赤）が見つかりません。";
+            _loading = false;
+          });
+          return;
+        }
+
+        // ヘッダー以降の各行から VocabularyItem を生成
+        List<VocabularyItem> allItems = [];
+        for (var i = 1; i < _csvData!.length; i++) {
+          var row = _csvData![i];
+          if (row.length > redIndex) {
+            allItems.add(
+              VocabularyItem(
+                word: row[wordIndex].toString(),
+                meaning: row[meaningIndex].toString(),
+                notes: row[notesIndex].toString(),
+                category: row[categoryIndex].toString(),
+                green: row[greenIndex].toString().toLowerCase() == 'true',
+                yellow: row[yellowIndex].toString().toLowerCase() == 'true',
+                red: row[redIndex].toString().toLowerCase() == 'true',
+              ),
+            );
+          }
+        }
+
+        if (allItems.isEmpty) {
+          setState(() {
+            _errorMessage = "単語データが存在しません。";
+            _loading = false;
+          });
+          return;
+        }
+
+        // 全データを保存
+        _allVocabularyItems = allItems;
+
+        // チェックボックスの状態に基づいてフィルタリング
+        bool anyFilterActive = _filterGreen || _filterYellow || _filterRed;
+
+        List<VocabularyItem> itemsToUse = allItems;
+        
+        if (anyFilterActive) {
+          List<VocabularyItem> filteredItems =
+              allItems.where((item) {
+                // いずれかの選択された色フラグがtrueの単語を含める
+                return (_filterGreen && item.green) ||
+                    (_filterYellow && item.yellow) ||
+                    (_filterRed && item.red);
+              }).toList();
+
+          // フィルタリングして0件の場合の処理（修正部分）
+          if (filteredItems.isEmpty) {
+            // エラーメッセージを表示せず、代わりにSnackBarで通知
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text("選択した条件に一致する単語がありません。すべての単語を表示します。"),
+                duration: Duration(seconds: 3),
+              ),
+            );
+            // itemsToUseはそのままallItems（全単語）を使用（何も変更しない）
+          } else {
+            itemsToUse = filteredItems;
+          }
+        } 
+
+        // 履歴へ追加（取得時刻は現在日時）
+        SheetHistory newHistory = SheetHistory(
+          sheetId: sheetId, 
+          displayName: sheetName, // 初期表示名はシートIDと同じ
+          retrievalDate: DateTime.now(),
+        );
+        
+        setState(() {
+          _vocabularyItems = itemsToUse;
+          _history.add(newHistory);
+          _loading = false;
+        });
+        
+        _saveHistory();
+        
+        // 単語帳ページへ遷移
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => FlashcardPage(vocabularyItems: itemsToUse),
+          ),
+        );
+      }
+    } catch (e) {
+      setState(() {
+        _errorMessage = "エラーが発生しました: $e";
+        _loading = false;
+      });
+    }
   }
 
   /// 取得ボタンが押されたときの処理
@@ -394,150 +610,250 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
               separatorBuilder: (context, index) => Divider(),
               itemBuilder: (context, index) {
                 final historyItem = _history[index];
-                return ListTile(
-                  title: Text(historyItem.displayName),
-                  subtitle: Text(
-                    "取得日: ${historyItem.retrievalDate.toLocal().toString().split('.').first}",
-                  ),
-                  trailing: IconButton(
-                    icon: Icon(Icons.edit, color: Colors.blue),
-                    onPressed: () {
-                      // 表示名編集ダイアログを表示
-                      _showEditNameDialog(historyItem);
-                    },
-                  ),
-                  onTap: () async {
-                    // 既存のコード（変更なし）
-                    // 選択されたシートIDでローディング表示を開始
-                    setState(() {
-                      _loading = true;
-                      _errorMessage = null;
-                    });
-                    
-                    try {
-                      // 保存されたシートIDからCSV取得用URLを生成
-                      final csvUrl = "https://docs.google.com/spreadsheets/d/${historyItem.sheetId}/export?format=csv&gid=0";
-                      
-                      // 以下は_fetchSpreadsheetと同様の処理でデータを取得
-                      final response = await http.get(Uri.parse(csvUrl));
-                      if (response.statusCode != 200) {
-                        setState(() {
-                          _errorMessage = "データの取得に失敗しました。HTTPステータスコード: ${response.statusCode}";
-                          _loading = false;
-                        });
-                        return;
-                      }
-                      
-                      // UTF-8でレスポンスのバイトデータをデコード
-                      final csvContent = utf8.decode(response.bodyBytes);
-                      
-                      // CSVパース
-                      final csvTable = const CsvToListConverter().convert(csvContent);
-                      
-                      // ヘッダー処理とデータの変換（_fetchSpreadsheetと同様）
-                      if (csvTable.isNotEmpty) {
-                        final header = csvTable[0];
-                        final int wordIndex = header.indexOf("単語");
-                        final int meaningIndex = header.indexOf("意味");
-                        final int notesIndex = header.indexOf("備考");
-                        final int categoryIndex = header.indexOf("カテゴリー");
-                        final int greenIndex = header.indexOf("緑");
-                        final int yellowIndex = header.indexOf("黄");
-                        final int redIndex = header.indexOf("赤");
-                        
-                        if (wordIndex == -1 || meaningIndex == -1 || notesIndex == -1 ||
-                            categoryIndex == -1 || greenIndex == -1 || yellowIndex == -1 || redIndex == -1) {
-                          setState(() {
-                            _errorMessage = "CSVに必要なカラムが見つかりません。";
-                            _loading = false;
-                          });
-                          return;
-                        }
-                        
-                        // VocabularyItemリストを生成
-                        List<VocabularyItem> items = [];
-                        for (var i = 1; i < csvTable.length; i++) {
-                          var row = csvTable[i];
-                          if (row.length > redIndex) {
-                            items.add(
-                              VocabularyItem(
-                                word: row[wordIndex].toString(),
-                                meaning: row[meaningIndex].toString(),
-                                notes: row[notesIndex].toString(),
-                                category: row[categoryIndex].toString(),
-                                green: row[greenIndex].toString().toLowerCase() == 'true',
-                                yellow: row[yellowIndex].toString().toLowerCase() == 'true',
-                                red: row[redIndex].toString().toLowerCase() == 'true',
-                              ),
-                            );
-                          }
-                        }
-                        
-                        if (items.isEmpty) {
-                          setState(() {
-                            _errorMessage = "単語データが存在しません。";
-                            _loading = false;
-                          });
-                          return;
-                        }
-                        
-                        // 全データを保存
-                        setState(() {
-                          _allVocabularyItems = items;
-                          _loading = false;
-                        });
-                        
-                        // フィルター処理
-                        bool anyFilterActive = _filterGreen || _filterYellow || _filterRed;
-                        
-                        if (anyFilterActive) {
-                          List<VocabularyItem> filteredItems = items.where((item) {
-                            return (_filterGreen && item.green) ||
-                                (_filterYellow && item.yellow) ||
-                                (_filterRed && item.red);
-                          }).toList();
-                          
-                          if (filteredItems.isEmpty) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text("選択した条件に一致する単語がありません。すべての単語を表示します。"),
-                                duration: Duration(seconds: 3),
-                              ),
-                            );
-                            
-                            // フィルター結果が空の場合は全単語を使用
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) => FlashcardPage(vocabularyItems: items),
-                              ),
-                            );
-                          } else {
-                            // フィルター結果があれば、それを使用
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) => FlashcardPage(vocabularyItems: filteredItems),
-                              ),
-                            );
-                          }
-                        } else {
-                          // フィルターが選択されていない場合は全単語を使用
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => FlashcardPage(vocabularyItems: items),
-                            ),
-                          );
-                        }
-                      }
-                    } catch (e) {
-                      setState(() {
-                        _errorMessage = "エラーが発生しました: $e";
-                        _loading = false;
-                      });
+                // Dismissibleウィジェットで左スワイプでの削除機能を追加
+                return Dismissible(
+                  // 各履歴アイテムに一意のキーが必要
+                  key: Key(historyItem.sheetId + historyItem.retrievalDate.toIso8601String()),
+                  // 左スワイプのみ許可
+                  direction: historyItem.isFavorite 
+                      ? DismissDirection.none // お気に入りの場合はスワイプできない
+                      : DismissDirection.endToStart,
+                  // 確認ダイアログを表示
+                  confirmDismiss: (direction) async {
+                    // お気に入りの場合は削除不可
+                    if (historyItem.isFavorite) {
+                      return false;
                     }
+                    
+                    return await showDialog(
+                      context: context,
+                      builder: (BuildContext context) {
+                        return AlertDialog(
+                          title: Text("履歴の削除"),
+                          content: Text("「${historyItem.displayName}」を履歴から削除しますか？"),
+                          actions: <Widget>[
+                            TextButton(
+                              onPressed: () => Navigator.of(context).pop(false),
+                              child: Text("キャンセル"),
+                            ),
+                            TextButton(
+                              onPressed: () => Navigator.of(context).pop(true),
+                              child: Text("削除", style: TextStyle(color: Colors.red)),
+                            ),
+                          ],
+                        );
+                      },
+                    );
                   },
+                  // 削除時の処理
+                  onDismissed: (direction) {
+                    setState(() {
+                      _history.removeAt(index);
+                      _saveHistory(); // 履歴の変更を保存
+                    });
+                    // 削除完了メッセージ
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text("「${historyItem.displayName}」を削除しました"),
+                        duration: Duration(seconds: 2),
+                        action: SnackBarAction(
+                          label: '元に戻す',
+                          onPressed: () {
+                            setState(() {
+                              _history.insert(index, historyItem);
+                              _saveHistory();
+                            });
+                          },
+                        ),
+                      ),
+                    );
+                  },
+                  // スワイプ時に表示する背景（削除アイコン付き）
+                  background: Container(
+                    color: Colors.red,
+                    alignment: Alignment.centerRight,
+                    padding: EdgeInsets.symmetric(horizontal: 16),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        Text(
+                          "削除",
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        SizedBox(width: 8),
+                        Icon(
+                          Icons.delete,
+                          color: Colors.white,
+                        ),
+                      ],
+                    ),
+                  ),
+                  // Dismissibleの中身となるウィジェット
+                  child: Container(
+                    // お気に入りの場合は背景色を変更
+                    color: historyItem.isFavorite ? Colors.yellow.shade50 : null,
+                    child: ListTile(
+                      // お気に入りボタンを追加
+                      leading: IconButton(
+                        icon: Icon(
+                          historyItem.isFavorite ? Icons.star : Icons.star_border,
+                          color: historyItem.isFavorite ? Colors.amber : Colors.grey,
+                        ),
+                        onPressed: () {
+                          setState(() {
+                            historyItem.isFavorite = !historyItem.isFavorite;
+                            _saveHistory(); // お気に入り状態を保存
+                          });
+                        },
+                      ),
+                      title: Text(historyItem.displayName),
+                      subtitle: Text(
+                        "取得日: ${historyItem.retrievalDate.toLocal().toString().split('.').first}",
+                      ),
+                      trailing: IconButton(
+                        icon: Icon(Icons.edit, color: Colors.blue),
+                        onPressed: () {
+                          // 表示名編集ダイアログを表示
+                          _showEditNameDialog(historyItem);
+                        },
+                      ),
+                      onTap: () async {
+                        // 既存のコード（変更なし）
+                        // 選択されたシートIDでローディング表示を開始
+                        setState(() {
+                          _loading = true;
+                          _errorMessage = null;
+                        });
+                        
+                        try {
+                          // 保存されたシートIDからCSV取得用URLを生成
+                          final csvUrl = "https://docs.google.com/spreadsheets/d/${historyItem.sheetId}/export?format=csv&gid=0";
+                          
+                          // 以下は_fetchSpreadsheetと同様の処理でデータを取得
+                          final response = await http.get(Uri.parse(csvUrl));
+                          if (response.statusCode != 200) {
+                            setState(() {
+                              _errorMessage = "データの取得に失敗しました。HTTPステータスコード: ${response.statusCode}";
+                              _loading = false;
+                            });
+                            return;
+                          }
+                          
+                          // UTF-8でレスポンスのバイトデータをデコード
+                          final csvContent = utf8.decode(response.bodyBytes);
+                          
+                          // CSVパース
+                          final csvTable = const CsvToListConverter().convert(csvContent);
+                          
+                          // ヘッダー処理とデータの変換（_fetchSpreadsheetと同様）
+                          if (csvTable.isNotEmpty) {
+                            final header = csvTable[0];
+                            final int wordIndex = header.indexOf("単語");
+                            final int meaningIndex = header.indexOf("意味");
+                            final int notesIndex = header.indexOf("備考");
+                            final int categoryIndex = header.indexOf("カテゴリー");
+                            final int greenIndex = header.indexOf("緑");
+                            final int yellowIndex = header.indexOf("黄");
+                            final int redIndex = header.indexOf("赤");
+                            
+                            if (wordIndex == -1 || meaningIndex == -1 || notesIndex == -1 ||
+                                categoryIndex == -1 || greenIndex == -1 || yellowIndex == -1 || redIndex == -1) {
+                              setState(() {
+                                _errorMessage = "CSVに必要なカラムが見つかりません。";
+                                _loading = false;
+                              });
+                              return;
+                            }
+                            
+                            // VocabularyItemリストを生成
+                            List<VocabularyItem> items = [];
+                            for (var i = 1; i < csvTable.length; i++) {
+                              var row = csvTable[i];
+                              if (row.length > redIndex) {
+                                items.add(
+                                  VocabularyItem(
+                                    word: row[wordIndex].toString(),
+                                    meaning: row[meaningIndex].toString(),
+                                    notes: row[notesIndex].toString(),
+                                    category: row[categoryIndex].toString(),
+                                    green: row[greenIndex].toString().toLowerCase() == 'true',
+                                    yellow: row[yellowIndex].toString().toLowerCase() == 'true',
+                                    red: row[redIndex].toString().toLowerCase() == 'true',
+                                  ),
+                                );
+                              }
+                            }
+                            
+                            if (items.isEmpty) {
+                              setState(() {
+                                _errorMessage = "単語データが存在しません。";
+                                _loading = false;
+                              });
+                              return;
+                            }
+                            
+                            // 全データを保存
+                            setState(() {
+                              _allVocabularyItems = items;
+                              _loading = false;
+                            });
+                            
+                            // フィルター処理
+                            bool anyFilterActive = _filterGreen || _filterYellow || _filterRed;
+                            
+                            if (anyFilterActive) {
+                              List<VocabularyItem> filteredItems = items.where((item) {
+                                return (_filterGreen && item.green) ||
+                                    (_filterYellow && item.yellow) ||
+                                    (_filterRed && item.red);
+                              }).toList();
+                              
+                              if (filteredItems.isEmpty) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text("選択した条件に一致する単語がありません。すべての単語を表示します。"),
+                                    duration: Duration(seconds: 3),
+                                  ),
+                                );
+                                
+                                // フィルター結果が空の場合は全単語を使用
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (context) => FlashcardPage(vocabularyItems: items),
+                                  ),
+                                );
+                              } else {
+                                // フィルター結果があれば、それを使用
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (context) => FlashcardPage(vocabularyItems: filteredItems),
+                                  ),
+                                );
+                              }
+                            } else {
+                              // フィルターが選択されていない場合は全単語を使用
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (context) => FlashcardPage(vocabularyItems: items),
+                                ),
+                              );
+                            }
+                          }
+                        } catch (e) {
+                          setState(() {
+                            _errorMessage = "エラーが発生しました: $e";
+                            _loading = false;
+                          });
+                        }
+                      },
+                    ),
+                  ),
                 );
               },
             ),
@@ -546,180 +862,258 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
   }
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: Text("スプレッドシート読み込み")),
-      body: SingleChildScrollView(
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            children: [
-              // スプレッドシートの共有リンク入力フィールド
-              TextField(
-                controller: _linkController,
-                decoration: InputDecoration(
-                  labelText: "スプレッドシートの共有リンク",
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              SizedBox(height: 10),
-              // 取得ボタン
-              ElevatedButton(
-                onPressed: _loading ? null : _fetchSpreadsheet,
-                child:
-                    _loading
-                        ? SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                        : Text("取得"),
-              ),
-              SizedBox(height: 20),
-
-              // 追加：色フィルターチェックボックス
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(12.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          // 緑チェックボックス
-                          Row(
-                            children: [
-                              Checkbox(
-                                value: _filterGreen,
-                                onChanged: (value) {
-                                  setState(() {
-                                    _filterGreen = value!;
-                                  });
-                                  _applyFilters(); // フィルター適用
-                                },
-                                activeColor: Colors.green,
-                              ),
-                              Text('緑'),
-                            ],
-                          ),
-                          SizedBox(width: 16),
-                          // 黄色チェックボックス
-                          Row(
-                            children: [
-                              Checkbox(
-                                value: _filterYellow,
-                                onChanged: (value) {
-                                  setState(() {
-                                    _filterYellow = value!;
-                                  });
-                                  _applyFilters(); // フィルター適用
-                                },
-                                fillColor: MaterialStateProperty.resolveWith(
-                                  (states) =>
-                                      states.contains(MaterialState.selected)
-                                          ? Colors.yellow
-                                          : null,
-                                ),
-                              ),
-                              Text('黄色'),
-                            ],
-                          ),
-                          SizedBox(width: 16),
-                          // 赤チェックボックス
-                          Row(
-                            children: [
-                              Checkbox(
-                                value: _filterRed,
-                                onChanged: (value) {
-                                  setState(() {
-                                    _filterRed = value!;
-                                  });
-                                  _applyFilters(); // フィルター適用
-                                },
-                                activeColor: Colors.red,
-                              ),
-                              Text('赤'),
-                            ],
-                          ),
-                        ],
-                      ),
-                      SizedBox(height: 8),
-                      Text(
-                        'チェックボックスにマークがある場合、その単語のみ出題\n（マークがない場合はすべて出題）',
-                        style: TextStyle(fontSize: 12, color: Colors.grey[700]),
-                        textAlign: TextAlign.center,
-                      ),
-                    ],
+Widget build(BuildContext context) {
+  return Scaffold(
+    appBar: AppBar(title: Text("スプレッドシート読み込み")),
+    body: SingleChildScrollView(
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // スプレッドシートの共有リンク入力フィールドとペーストボタン
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _linkController,
+                    decoration: InputDecoration(
+                      labelText: "スプレッドシートの共有リンク",
+                      border: OutlineInputBorder(),
+                      // クリアボタンを追加
+                      suffixIcon: _linkController.text.isNotEmpty
+                          ? IconButton(
+                              icon: Icon(Icons.clear),
+                              onPressed: () {
+                                _linkController.clear();
+                              },
+                            )
+                          : null,
+                    ),
                   ),
                 ),
+                SizedBox(width: 8),
+                IconButton(
+                  icon: Icon(Icons.content_paste),
+                  tooltip: "クリップボードから貼り付け",
+                  onPressed: _pasteFromClipboard,
+                ),
+              ],
+            ),
+            SizedBox(height: 16),
+            
+            // エラーメッセージがあれば表示（位置を移動：入力フォームの直下）
+            if (_errorMessage != null)
+              Container(
+                padding: EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.red.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  _errorMessage!,
+                  style: TextStyle(color: Colors.red),
+                  textAlign: TextAlign.center,
+                ),
               ),
-              SizedBox(height: 20),
 
-              if (_errorMessage != null)
-                Text(_errorMessage!, style: TextStyle(color: Colors.red)),
-              // CSV取得後、単語帳開始ボタンを表示（必要なカラムが存在する場合）
-              if (_vocabularyItems != null) _buildStartButton(),
-              SizedBox(height: 20),
-              // 履歴リストの表示
-              _buildHistoryList(),
-            ],
-          ),
+            SizedBox(height: _errorMessage != null ? 16 : 0),
+            
+            // リンクが入力されている場合は単語帳開始ボタンを表示、
+            // 入力されていない場合はヘルプメッセージを表示
+            if (_linkController.text.trim().isNotEmpty)
+              ElevatedButton(
+                onPressed: _loading ? null : _fetchAndStartFlashcards,
+                child: _loading
+                    ? SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Text("単語帳を開始"),
+              )
+            else
+              Container(
+                padding: EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.blue.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  "スプレッドシートの共有リンク（リンクを知っている全員）を入力してください。",
+                  style: TextStyle(color: Colors.blue.shade800),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            
+            SizedBox(height: 16),
+            
+            // 色フィルターチェックボックス
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        // 緑チェックボックス
+                        Row(
+                          children: [
+                            Checkbox(
+                              value: _filterGreen,
+                              onChanged: (value) {
+                                setState(() {
+                                  _filterGreen = value!;
+                                });
+                                _applyFilters(); // フィルター適用
+                              },
+                              activeColor: Colors.green,
+                            ),
+                            Text('緑'),
+                          ],
+                        ),
+                        SizedBox(width: 16),
+                        // 黄色チェックボックス
+                        Row(
+                          children: [
+                            Checkbox(
+                              value: _filterYellow,
+                              onChanged: (value) {
+                                setState(() {
+                                  _filterYellow = value!;
+                                });
+                                _applyFilters(); // フィルター適用
+                              },
+                              fillColor: MaterialStateProperty.resolveWith(
+                                (states) =>
+                                    states.contains(MaterialState.selected)
+                                        ? Colors.yellow
+                                        : null,
+                              ),
+                            ),
+                            Text('黄色'),
+                          ],
+                        ),
+                        SizedBox(width: 16),
+                        // 赤チェックボックス
+                        Row(
+                          children: [
+                            Checkbox(
+                              value: _filterRed,
+                              onChanged: (value) {
+                                setState(() {
+                                  _filterRed = value!;
+                                });
+                                _applyFilters(); // フィルター適用
+                              },
+                              activeColor: Colors.red,
+                            ),
+                            Text('赤'),
+                          ],
+                        ),
+                      ],
+                    ),
+                    SizedBox(height: 8),
+                    Text(
+                      'チェックボックスにマークがある場合、その単語のみ出題\n（マークがない場合はすべて出題）',
+                      style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            SizedBox(height: 20),
+            
+            // 履歴リストの表示
+            _buildHistoryList(),
+          ],
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 
   /// 履歴アイテムの表示名を編集するダイアログ
   void _showEditNameDialog(SheetHistory historyItem) {
     final TextEditingController _nameController = TextEditingController();
     _nameController.text = historyItem.displayName;
     
+    // テキスト入力状態を保持する変数
+    bool hasText = true;
+    
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text("表示名の編集"),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text("シートID: ${historyItem.sheetId}", style: TextStyle(fontSize: 12, color: Colors.grey)),
-            SizedBox(height: 8),
-            TextField(
-              controller: _nameController,
-              decoration: InputDecoration(
-                labelText: "表示名",
-                border: OutlineInputBorder(),
-                hintText: "最大100文字まで",
-              ),
-              maxLength: 100, // 100文字制限
-              autofocus: true,
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text("キャンセル"),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              // 入力された表示名を設定（空の場合はシートIDを使用）
-              String newDisplayName = _nameController.text.trim();
-              if (newDisplayName.isEmpty) {
-                newDisplayName = historyItem.sheetId;
-              }
-              
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) {
+          // _nameControllerにリスナーを追加
+          _nameController.addListener(() {
+            final newHasText = _nameController.text.isNotEmpty;
+            if (hasText != newHasText) {
               setState(() {
-                historyItem.displayName = newDisplayName;
-                _saveHistory(); // 変更を保存
+                hasText = newHasText;
               });
-              
-              Navigator.pop(context);
-            },
-            child: Text("保存"),
-          ),
-        ],
+            }
+          });
+          
+          return AlertDialog(
+            title: Text("表示名の編集"),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text("シートID: ${historyItem.sheetId}", style: TextStyle(fontSize: 12, color: Colors.grey)),
+                SizedBox(height: 8),
+                TextField(
+                  controller: _nameController,
+                  decoration: InputDecoration(
+                    labelText: "表示名",
+                    border: OutlineInputBorder(),
+                    hintText: "最大100文字まで",
+                    // クリアボタンを追加
+                    suffixIcon: hasText
+                        ? IconButton(
+                            icon: Icon(Icons.clear),
+                            onPressed: () {
+                              _nameController.clear();
+                            },
+                          )
+                        : null,
+                  ),
+                  maxLength: 100, // 100文字制限
+                  autofocus: true,
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text("キャンセル"),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  // 入力された表示名を設定（空の場合はシートIDを使用）
+                  String newDisplayName = _nameController.text.trim();
+                  if (newDisplayName.isEmpty) {
+                    newDisplayName = historyItem.sheetId;
+                  }
+                  
+                  setState(() {
+                    historyItem.displayName = newDisplayName;
+                    this.setState(() {
+                      _saveHistory(); // 変更を保存
+                    });
+                  });
+                  
+                  Navigator.pop(context);
+                },
+                child: Text("保存"),
+              ),
+            ],
+          );
+        }
       ),
     );
   }
