@@ -26,15 +26,20 @@ class AppSettings {
   // デフォルト値
   static const double DEFAULT_TEXT_SIZE = 24.0;  // 単語と意味の共通サイズ
   static const double DEFAULT_NOTES_SIZE = 16.0;
+  static const String DEFAULT_EDGE_COLOR = "blue"; // デフォルト色は青
   
   // 単語カード内の文字サイズ
   double textSize;  // 単語と意味の共通サイズ（統一）
   double notesSize;
+  
+  // カード裏面のエッジカラー
+  String edgeColor; // "red", "yellow", "green", "blue", "purple"のいずれか
 
   // コンストラクタ（デフォルト値を設定）
   AppSettings({
     this.textSize = DEFAULT_TEXT_SIZE,
     this.notesSize = DEFAULT_NOTES_SIZE,
+    this.edgeColor = DEFAULT_EDGE_COLOR,
   });
 
   // JSONに変換するメソッド
@@ -42,18 +47,19 @@ class AppSettings {
     return {
       'textSize': textSize,
       'notesSize': notesSize,
+      'edgeColor': edgeColor,
     };
   }
 
   // JSONから復元するファクトリメソッド
   factory AppSettings.fromMap(Map<String, dynamic> map) {
-    // 後方互換性のための処理（既存データを新しい形式に変換）
+    // 後方互換性のための処理
     if (map.containsKey('wordSize') && map.containsKey('meaningSize')) {
-      // 以前の設定があれば、wordSizeを優先して使用
       final textSize = map['wordSize'] ?? DEFAULT_TEXT_SIZE;
       return AppSettings(
         textSize: textSize,
         notesSize: map['notesSize'] ?? DEFAULT_NOTES_SIZE,
+        edgeColor: map['edgeColor'] ?? DEFAULT_EDGE_COLOR,
       );
     }
     
@@ -61,6 +67,7 @@ class AppSettings {
     return AppSettings(
       textSize: map['textSize'] ?? DEFAULT_TEXT_SIZE,
       notesSize: map['notesSize'] ?? DEFAULT_NOTES_SIZE,
+      edgeColor: map['edgeColor'] ?? DEFAULT_EDGE_COLOR,
     );
   }
 }
@@ -155,9 +162,10 @@ class SettingsPage extends StatefulWidget {
 }
 
 class _SettingsPageState extends State<SettingsPage> {
-  late double _textSize;  // 単語と意味の共通サイズ
+  late double _textSize;
   late double _notesSize;
-  bool _hasChanges = false; // 設定変更の有無を追跡
+  late String _edgeColor; // エッジカラー設定を追加
+  bool _hasChanges = false;
 
   @override
   void initState() {
@@ -165,6 +173,19 @@ class _SettingsPageState extends State<SettingsPage> {
     // 現在の設定値を取得
     _textSize = widget.settings.textSize;
     _notesSize = widget.settings.notesSize;
+    _edgeColor = widget.settings.edgeColor; // エッジカラー設定を取得
+  }
+
+  // 色を取得するヘルパーメソッド
+  Color _getColorFromString(String colorName) {
+    switch (colorName) {
+      case "red": return Colors.red;
+      case "yellow": return Colors.yellow;
+      case "green": return Colors.green;
+      case "blue": return Colors.blue;
+      case "purple": return Colors.purple;
+      default: return Colors.blue;
+    }
   }
 
   // 設定を保存する
@@ -172,6 +193,7 @@ class _SettingsPageState extends State<SettingsPage> {
     final newSettings = AppSettings(
       textSize: _textSize,
       notesSize: _notesSize,
+      edgeColor: _edgeColor, // エッジカラー設定も保存
     );
     widget.onSettingsChanged(newSettings);
     Navigator.pop(context);
@@ -316,10 +338,137 @@ class _SettingsPageState extends State<SettingsPage> {
                     ),
                   ),
                 ),
+                
+                SizedBox(height: 16),
+                
+                // カード裏面の設定カード - 新規追加
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'カード裏面',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        SizedBox(height: 16),
+                        
+                        // エッジカラー設定
+                        Text('エッジのカラー:'),
+                        SizedBox(height: 12),
+                        
+                        // カラーパレット
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                          children: [
+                            _buildColorOption("red", "赤"),
+                            _buildColorOption("yellow", "黄"),
+                            _buildColorOption("green", "緑"),
+                            _buildColorOption("blue", "青"),
+                            _buildColorOption("purple", "紫"),
+                          ],
+                        ),
+                        
+                        SizedBox(height: 24),
+                        
+                        // プレビュー
+                        Text('プレビュー:'),
+                        SizedBox(height: 8),
+                        Container(
+                          height: 120,
+                          width: double.infinity,
+                          decoration: BoxDecoration(
+                            border: Border.all(color: Colors.grey),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Stack(
+                            children: [
+                              // 上下のエッジライン
+                              Positioned(
+                                top: 0,
+                                left: 0,
+                                right: 0,
+                                child: Container(
+                                  height: 4,
+                                  color: _getColorFromString(_edgeColor),
+                                ),
+                              ),
+                              Positioned(
+                                bottom: 0,
+                                left: 0,
+                                right: 0,
+                                child: Container(
+                                  height: 4,
+                                  color: _getColorFromString(_edgeColor),
+                                ),
+                              ),
+                              
+                              // カード内容のプレビュー
+                              Center(
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Text("意味のサンプル", style: TextStyle(fontSize: _textSize)),
+                                    SizedBox(height: 8),
+                                    Text("備考のサンプル", style: TextStyle(fontSize: _notesSize)),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
               ],
             ),
           ),
         ),
+      ),
+    );
+  }
+  
+  // 色選択ウィジェット
+  Widget _buildColorOption(String colorName, String displayName) {
+    bool isSelected = _edgeColor == colorName;
+    Color color = _getColorFromString(colorName);
+    
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          _edgeColor = colorName;
+          _hasChanges = _textSize != widget.settings.textSize || 
+                       _notesSize != widget.settings.notesSize ||
+                       _edgeColor != widget.settings.edgeColor;
+        });
+      },
+      child: Column(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: color,
+              border: Border.all(
+                color: isSelected ? Colors.black : Colors.grey,
+                width: isSelected ? 3 : 1,
+              ),
+              borderRadius: BorderRadius.circular(8),
+            ),
+          ),
+          SizedBox(height: 4),
+          Text(
+            displayName,
+            style: TextStyle(
+              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -1500,70 +1649,104 @@ class _FlashcardPageState extends State<FlashcardPage> {
     );
   }
 
+  // 色を取得するヘルパーメソッド
+  Color _getColorFromString(String colorName) {
+    switch (colorName) {
+      case "red": return Colors.red;
+      case "yellow": return Colors.yellow;
+      case "green": return Colors.green;
+      case "blue": return Colors.blue;
+      case "purple": return Colors.purple;
+      default: return Colors.blue;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final currentItem = widget.vocabularyItems[_currentIndex];
     
-    // 内部状態から文字サイズを取得するよう変更
+    // 内部状態から設定を取得
     final textSize = _currentSettings.textSize;    
     final notesFontSize = _currentSettings.notesSize;
+    final edgeColor = _getColorFromString(_currentSettings.edgeColor);
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text("単語帳"),
-        actions: [
-          // 設定ボタンを追加
-          IconButton(
-            icon: Icon(Icons.settings),
-            tooltip: '設定',
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => SettingsPage(
-                    // 現在の内部状態の設定を渡す
-                    settings: _currentSettings,
-                    onSettingsChanged: (newSettings) {
-                      // 1. 親コンポーネントに通知
-                      widget.onSettingsChanged(newSettings);
-                      
-                      // 2. 自身の状態も更新（これが欠けていた）
-                      setState(() {
-                        _currentSettings = newSettings;
-                      });
-                    },
-                  ),
+    appBar: AppBar(
+      title: Text("単語帳"),
+      actions: [
+        // 設定ボタンを追加
+        IconButton(
+          icon: Icon(Icons.settings),
+          tooltip: '設定',
+          onPressed: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => SettingsPage(
+                  settings: _currentSettings,
+                  onSettingsChanged: (newSettings) {
+                    widget.onSettingsChanged(newSettings);
+                    setState(() {
+                      _currentSettings = newSettings;
+                    });
+                  },
                 ),
-              );
-            },
+              ),
+            );
+          },
+        ),
+      ],
+    ),
+    body: Padding(
+      padding: const EdgeInsets.all(16.0),
+      child: Column(
+        children: [
+          // 上部ボタン部分
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              ElevatedButton(onPressed: _shuffleCards, child: Text("シャッフル")),
+              SizedBox(width: 8),
+              ElevatedButton(onPressed: _restartCards, child: Text("最初から")),
+            ],
           ),
-        ],
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          children: [
-            // 上部ボタン部分
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                ElevatedButton(onPressed: _shuffleCards, child: Text("シャッフル")),
-                SizedBox(width: 8),
-                ElevatedButton(onPressed: _restartCards, child: Text("最初から")),
-              ],
-            ),
-            SizedBox(height: 12),
-            // カード部分（編集不要）
+          SizedBox(height: 12),
+          // カード部分 - エッジライン表示を追加
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 4.0),
                 child: Card(
                   elevation: 4,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
                   child: LayoutBuilder(
                     builder: (context, constraints) {
                       return Stack(
                         children: [
-                          // 左上：カテゴリー表示（変更なし）
+                          // 裏面表示時のみエッジラインを表示
+                          if (!_isFront) ...[
+                            Positioned(
+                              top: 0,
+                              left: 0,
+                              right: 0,
+                              child: Container(
+                                height: 4,
+                                color: edgeColor,
+                              ),
+                            ),
+                            Positioned(
+                              bottom: 0,
+                              left: 0,
+                              right: 0,
+                              child: Container(
+                                height: 4,
+                                color: edgeColor,
+                              ),
+                            ),
+                          ],
+                          
+                          // 左上：カテゴリー表示
                           Positioned(
                             top: 8,
                             left: 8,
@@ -1575,64 +1758,88 @@ class _FlashcardPageState extends State<FlashcardPage> {
                               ),
                             ),
                           ),
-                          // メインコンテンツ - 新しいサイズ設定を使用
-                          Padding(
-                            padding: const EdgeInsets.all(24.0),
-                            child: Center(
-                              child: _isFront
-                                  ? // 表面（単語）
-                                    SingleChildScrollView(
-                                      physics: AlwaysScrollableScrollPhysics(),
-                                      child: Container(
-                                        width: double.infinity,
-                                        child: Text(
-                                          currentItem.word,
-                                          style: TextStyle(fontSize: textSize), // 共通サイズを使用
-                                          textAlign: TextAlign.center,
-                                        ),
-                                      ),
-                                    )
-                                  : // 裏面（意味と備考）
-                                    SingleChildScrollView(
-                                      physics: AlwaysScrollableScrollPhysics(),
-                                      child: Column(
-                                        mainAxisSize: MainAxisSize.min,
-                                        mainAxisAlignment: MainAxisAlignment.center,
-                                        children: [
-                                          Container(
-                                            width: double.infinity,
-                                            child: Text(
-                                              currentItem.meaning,
-                                              style: TextStyle(fontSize: textSize), // 共通サイズを使用
-                                              textAlign: TextAlign.center,
-                                            ),
-                                          ),
-                                          SizedBox(height: 10),
-                                          Container(
-                                            width: double.infinity,
-                                            child: Text(
-                                              currentItem.notes,
-                                              style: TextStyle(fontSize: notesFontSize),
-                                              textAlign: TextAlign.center,
-                                            ),
-                                          ),
-                                        ],
+                          
+                        // メインコンテンツ
+                        Padding(
+                          padding: const EdgeInsets.all(24.0),
+                          child: Center(
+                            child: _isFront
+                                ? // 表面（単語）
+                                  SingleChildScrollView(
+                                    physics: AlwaysScrollableScrollPhysics(),
+                                    child: Container(
+                                      width: double.infinity,
+                                      child: Text(
+                                        currentItem.word,
+                                        style: TextStyle(fontSize: textSize),
+                                        textAlign: TextAlign.center,
                                       ),
                                     ),
+                                  )
+                                : // 裏面（意味と備考）
+                                  SingleChildScrollView(
+                                    physics: AlwaysScrollableScrollPhysics(),
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        Container(
+                                          width: double.infinity,
+                                          child: Text(
+                                            currentItem.meaning,
+                                            style: TextStyle(fontSize: textSize),
+                                            textAlign: TextAlign.center,
+                                          ),
+                                        ),
+                                        SizedBox(height: 10),
+                                        Container(
+                                          width: double.infinity,
+                                          child: Text(
+                                            currentItem.notes,
+                                            style: TextStyle(fontSize: notesFontSize),
+                                            textAlign: TextAlign.center,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                          ),
+                        ),
+                        // 右上：色フラグインジケーター
+                        Positioned(
+                          top: 8,
+                          right: 8,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              _buildIndicator(currentItem.green, Colors.green),
+                              SizedBox(width: 4),
+                              _buildIndicator(currentItem.yellow, Colors.yellow),
+                              SizedBox(width: 4),
+                              _buildIndicator(currentItem.red, Colors.red),
+                            ],
+                          ),
+                        ),
+                        // 右下：カード番号表示
+                        Positioned(
+                          bottom: 8,
+                          right: 8,
+                          child: Text(
+                            "${_currentIndex + 1}/${widget.vocabularyItems.length}",
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.black54,
                             ),
                           ),
-                          // 右上：色フラグインジケーター（変更なし）
-                          // ...
-                          // 右下：カード番号表示（変更なし）
-                          // ...
-                        ],
-                      );
-                    },
-                  ),
+                        ),
+                      ],
+                    );
+                  },
                 ),
               ),
             ),
-            SizedBox(height: 12),
+          ),
+          SizedBox(height: 12),
           ],
         ),
       ),
