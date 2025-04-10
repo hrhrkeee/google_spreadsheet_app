@@ -37,6 +37,8 @@ dependencies:
   http: ^0.13.0
   csv: ^5.0.0
   shared_preferences: ^2.0.15
+  flutter_localizations: 
+    sdk: flutter
 
 dev_dependencies:
   flutter_test:
@@ -59,6 +61,11 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  fonts:
+    - family: Noto Sans JP
+      fonts:
+        - asset: fonts/NotoSansJP-Regular.ttf
 
   # To add assets to your application, add an assets section, like this:
   # assets:
