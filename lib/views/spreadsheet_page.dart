@@ -535,7 +535,15 @@ class _SpreadsheetPageState extends State<SpreadsheetPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text("スプレッドシート読み込み"),
+        leading: Padding(
+          padding: const EdgeInsets.fromLTRB(10.0, 10.0, 4.0, 10.0),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(8.0),
+            child: Image.asset('assets/icons/custom-icon3.png'),
+          ),
+        ),
+        title: Text("スプシ単語帳"),
+        titleSpacing: 5.0,
         actions: [
           IconButton(
             icon: Icon(Icons.settings),
